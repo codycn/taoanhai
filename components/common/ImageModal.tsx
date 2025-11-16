@@ -16,6 +16,7 @@ const ImageModal: React.FC<ImageModalProps> = ({ isOpen, onClose, image, showInf
   const { showToast } = useAuth();
   const { t } = useTranslation();
   const [isCopied, setIsCopied] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   if (!isOpen || !image) return null;
 
@@ -29,19 +30,53 @@ const ImageModal: React.FC<ImageModalProps> = ({ isOpen, onClose, image, showInf
     }, 2000);
   };
 
-  const handleDownload = (e: React.MouseEvent) => {
+  const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!image?.image_url) return;
+    if (!image?.image_url || isDownloading) return;
 
-    const downloadUrl = `/.netlify/functions/download-image?url=${encodeURIComponent(image.image_url)}`;
+    setIsDownloading(true);
 
-    const a = document.createElement('a');
-    a.style.display = 'none';
-    a.href = downloadUrl;
-    a.download = `audition-ai-${image.id}.png`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    try {
+        // Primary method: client-side fetch.
+        // This is more robust and relies on standard web APIs.
+        const response = await fetch(image.image_url);
+        if (!response.ok) {
+            throw new Error(`Network response was not ok: ${response.statusText}`);
+        }
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        
+        const fileExtension = blob.type.split('/')[1] || 'png';
+        a.download = `audition-ai-${image.id}.${fileExtension}`;
+        
+        document.body.appendChild(a);
+        a.click();
+        
+        window.URL.revokeObjectURL(url);
+        a.remove();
+    } catch (error) {
+        console.error('Client-side download failed, falling back to proxy function.', error);
+        
+        // Fallback to the original server-side proxy method.
+        try {
+            const downloadUrl = `/.netlify/functions/download-image?url=${encodeURIComponent(image.image_url)}`;
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = downloadUrl;
+            a.download = `audition-ai-${image.id}.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        } catch (proxyError) {
+             console.error('Proxy download fallback also failed:', proxyError);
+             showToast('Tải ảnh thất bại. Vui lòng thử lại hoặc liên hệ hỗ trợ.', 'error');
+        }
+    } finally {
+        setIsDownloading(false);
+    }
   };
   
   const rank = image.creator ? getRankForLevel(image.creator.level) : getRankForLevel(1);
@@ -101,10 +136,17 @@ const ImageModal: React.FC<ImageModalProps> = ({ isOpen, onClose, image, showInf
                 </button>
                 <button 
                     onClick={handleDownload}
-                    className="w-full px-4 py-2 text-sm font-semibold rounded-lg flex items-center justify-center gap-2 transition-all duration-300 bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
+                    disabled={isDownloading}
+                    className="w-full px-4 py-2 text-sm font-semibold rounded-lg flex items-center justify-center gap-2 transition-all duration-300 bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 disabled:opacity-50 disabled:cursor-wait"
                 >
-                    <i className="ph-fill ph-download-simple"></i>
-                    <span>{t('modals.image.download')}</span>
+                    {isDownloading ? (
+                        <div className="w-5 h-5 border-2 border-white/50 border-t-white rounded-full animate-spin"></div>
+                    ) : (
+                        <>
+                            <i className="ph-fill ph-download-simple"></i>
+                            <span>{t('modals.image.download')}</span>
+                        </>
+                    )}
                 </button>
                  
                  {/* Share button for "My Creations" */}
