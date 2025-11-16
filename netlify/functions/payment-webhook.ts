@@ -15,30 +15,41 @@ const handler: Handler = async (event: HandlerEvent) => {
         return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) };
     }
 
-    // Check if this is a validation request from the app's frontend.
-    // Such requests will be authenticated with the user's JWT.
+    // Case 1: Handle validation request from the app's own frontend settings page.
+    // This request is authenticated with the user's JWT.
     const authHeader = event.headers['authorization'];
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.split(' ')[1];
         try {
             const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
             if (!error && user) {
-                // This is an authenticated test request from our own app.
-                // We return 200 OK to confirm the webhook URL is live and reachable.
-                console.log(`[INFO] Webhook validation request from user ${user.id} successful.`);
+                console.log(`[INFO] Webhook validation from app user ${user.id} successful.`);
                 return {
                     statusCode: 200,
                     body: JSON.stringify({ message: 'Webhook URL validation successful.' }),
                 };
             }
         } catch (e) {
-            // If token validation fails for any reason, fall through to PayOS validation.
             console.warn('[WARN] Error during app-internal webhook validation, proceeding to PayOS check.', e);
         }
     }
 
     // --- Standard PayOS Webhook Logic ---
-    console.log("--- [START] PayOS Webhook Received ---");
+    const body = JSON.parse(event.body || '{}');
+
+    // Case 2: Handle validation "ping" from the PayOS dashboard itself.
+    // These requests often have an empty body or a body without a `data` field.
+    // We must return 200 OK to let PayOS know the endpoint is live.
+    if (!body.data) {
+        console.log("[INFO] Received a request without a 'data' field. Treating as a validation ping from PayOS.");
+        return {
+            statusCode: 200,
+            body: JSON.stringify({ message: 'PayOS webhook validation successful.' }),
+        };
+    }
+
+    // Case 3: Handle a genuine payment notification from PayOS.
+    console.log("--- [START] PayOS Payment Webhook Received ---");
 
     if (!PAYOS_CHECKSUM_KEY) {
         console.error('[FATAL] PAYOS_CHECKSUM_KEY is not set.');
@@ -47,12 +58,11 @@ const handler: Handler = async (event: HandlerEvent) => {
     
     try {
         const signatureFromHeader = event.headers['x-payos-signature'];
-        const body = JSON.parse(event.body || '{}');
         const webhookData = body.data;
 
-        if (!webhookData || !signatureFromHeader) {
-            console.error("[VALIDATION_ERROR] Missing 'data' or 'x-payos-signature' header.");
-            return { statusCode: 400, body: JSON.stringify({ error: 'Missing webhook data or signature.' }) };
+        if (!signatureFromHeader) {
+            console.error("[VALIDATION_ERROR] Missing 'x-payos-signature' header for a data-carrying webhook.");
+            return { statusCode: 400, body: JSON.stringify({ error: 'Missing webhook signature.' }) };
         }
         
         const calculatedSignature = createSignature(webhookData, PAYOS_CHECKSUM_KEY);
